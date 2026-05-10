@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+demucs
+basic-pitch
+yt-dlp
+librosa
+python-multipart
+pydub
+tuttut
+music21
+torch
+torchaudio
+tensorflow-cpu
