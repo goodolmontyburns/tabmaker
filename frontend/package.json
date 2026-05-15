@@ -12,6 +12,7 @@
   "dependencies": {
     "@coderline/alphatab": "^1.8.2",
     "axios": "^1.16.0",
+    "jspdf": "^4.2.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "wavesurfer.js": "^7.12.6",
