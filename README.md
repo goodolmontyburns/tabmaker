@@ -14,9 +14,9 @@ TabMaker is an advanced web application designed specifically for transcribing c
 - **Pro SVG Tab Renderer**: 
   - **Area Selection**: Click and drag to highlight phrases and shift them independently across the neck.
   - **Octave Snapping Slider**: Move the neck position slider to instantly snap notes into the most playable "box."
-  - **Meter Visualization**: Real-time beat markers (metronome dots) and tie lines for sustained notes.
+  - **Meter Visualization**: Accurate real-time beat markers (metronome dots) and measure lines based on adjustable time signatures.
 - **Twangy Audit Synth**: A resonant sawtooth-based synthesizer to audit your tab's melody and rhythm.
-- **Professional Export**: Multi-page PDF export formatted for real-world use.
+- **Professional Export**: Multi-page PDF export with accurate time signatures and rhythmic formatting.
 
 ## 🛠 Installation & Setup
 

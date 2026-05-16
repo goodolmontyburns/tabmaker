@@ -21,12 +21,14 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [playheadX, setPlayheadX] = useState(60);
-  const [currentTime, setCurrentTime] = useState(0);
   const [zoom, setZoom] = useState(250);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isSynthPlaying, setIsSynthPlaying] = useState(false);
   const [targetFret, setTargetFret] = useState(10);
-  const [preferOpen, setPreferOpen] = useState(true); // New Toggle State
+  const [preferOpen, setPreferOpen] = useState(true);
+  const [tsNum, setTsNum] = useState(4);
+  const [tsDenom, setTsDenom] = useState(4);
+  const bpm = 120;
   const audioContextRef = useRef<AudioContext | null>(null);
   const requestRef = useRef<number | null>(null);
   const synthStartTimeRef = useRef<number>(0);
@@ -36,14 +38,14 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
   const [dragStartPos, setDragStartPos] = useState<number | null>(null);
   const [activeEditingNoteId, setActiveEditingNoteId] = useState<string | null>(null);
 
-  const bpm = 65;
   const beatDuration = 60 / bpm;
-  const secsPerMeasure = beatDuration * 4;
+  const secsPerMeasure = beatDuration * tsNum;
   const paddingLeft = 80; 
   const width = duration * zoom;
   const tabLineSpacing = 20;
-  const tabTop = 60;
-  const height = 220;
+  const tabTop = 80;
+  const height = 300;
+
 
   const offsets = [64, 59, 55, 50, 45, 40];
 
@@ -82,7 +84,6 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
         current = audioRef.current.currentTime;
     }
     if (current <= duration) {
-        setCurrentTime(current);
         const x = paddingLeft + (current * zoom);
         setPlayheadX(x);
         if (containerRef.current) containerRef.current.scrollLeft = x - (containerRef.current.clientWidth * 0.4);
@@ -105,13 +106,13 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
   };
 
   const exportPDF = () => {
-    const doc = jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
+    const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const margins = 50;
     const printableWidth = pageWidth - margins * 2;
-    doc.setFontSize(22); doc.text("Transcribed Blues Solo", margins, 60);
-    doc.setFontSize(10); doc.text("Tuning: E A D G B E | Tempo: 65 BPM", margins, 80);
+    doc.setFontSize(22); doc.text("Transcribed Guitar Solo", margins, 60);
+    doc.setFontSize(10); doc.text(`Tuning: E A D G B E | Time Signature: ${tsNum}/${tsDenom}`, margins, 80);
 
     const rowHeight = 100;
     const lineSpacing = 12;
@@ -174,8 +175,8 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
                 </button>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '30px', alignItems: 'center', background: '#fff', padding: '15px', borderRadius: '12px', border: '1px solid #cbd5e1' }}>
-              <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', gap: '30px', alignItems: 'center', background: '#fff', padding: '15px', borderRadius: '12px', border: '1px solid #cbd5e1', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 300px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <label style={{ fontWeight: 'bold' }}>Neck Position Shift ({selection ? "Selected Area" : "All"}): Fret {targetFret}</label>
                       <label style={{ cursor: 'pointer', background: '#eef2f7', padding: '4px 10px', borderRadius: '6px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -193,7 +194,15 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
                   </div>
                   <input type="range" min="0" max="17" value={targetFret} onChange={(e) => { setTargetFret(Number(e.target.value)); optimizePositions(Number(e.target.value), preferOpen); }} style={{ width: '100%', marginTop: '10px' }} />
               </div>
-              <div style={{ display: 'flex', gap: '15px' }}>
+              <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <label style={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Time Sig</label>
+                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <input type="number" value={tsNum} onChange={(e) => setTsNum(Number(e.target.value))} style={{ width: '35px', padding: '5px' }} />
+                          <span style={{ margin: '0 3px' }}>/</span>
+                          <input type="number" value={tsDenom} onChange={(e) => setTsDenom(Number(e.target.value))} style={{ width: '35px', padding: '5px' }} />
+                      </div>
+                  </div>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <label style={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Speed</label>
                     <input type="range" min="0.5" max="1.5" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(Number(e.target.value))} style={{ width: '80px' }} />
@@ -210,15 +219,20 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
         <svg ref={svgRef} width={width + 500} height={height} onMouseDown={(e) => { if (e.button === 0) { const rect = svgRef.current!.getBoundingClientRect(); setDragStartPos(e.clientX - rect.left); setIsSelecting(true); setSelection(null); } }} onMouseMove={(e) => { if (isSelecting && dragStartPos !== null) { const rect = svgRef.current!.getBoundingClientRect(); const xCurrent = e.clientX - rect.left; setSelection({ tStart: Math.max(0, (Math.min(dragStartPos, xCurrent) - paddingLeft) / zoom), tEnd: Math.min(duration, (Math.max(dragStartPos, xCurrent) - paddingLeft) / zoom) }); } }} onMouseUp={() => setIsSelecting(false)} onMouseLeave={() => setIsSelecting(false)}>
           {selection && <rect x={paddingLeft + selection.tStart * zoom} y={0} width={(selection.tEnd - selection.tStart) * zoom} height={height} fill="rgba(59, 130, 246, 0.1)" stroke="rgba(59, 130, 246, 0.3)" />}
           <text x="15" y={tabTop + 50} fontSize="14" fontWeight="bold" fill="#1e293b">TAB</text>
-          <text x="55" y={tabTop + 15} fontSize="18" fontWeight="bold">12</text>
-          <text x="55" y={tabTop + 45} fontSize="18" fontWeight="bold">8</text>
+          <text x="55" y={tabTop + 15} fontSize="18" fontWeight="bold">{tsNum}</text>
+          <text x="55" y={tabTop + 45} fontSize="18" fontWeight="bold">{tsDenom}</text>
 
-          {Array.from({ length: Math.ceil(duration / secsPerMeasure) + 1 }).map((_, i) => (
-              <g key={i}>
-                <line x1={paddingLeft + (i * secsPerMeasure * zoom)} y1={tabTop} x2={paddingLeft + (i * secsPerMeasure * zoom)} y2={tabTop + (5 * tabLineSpacing)} stroke="#1e293b" strokeWidth="2" />
-                <text x={paddingLeft + (i * secsPerMeasure * zoom) + 5} y={tabTop - 15} fontSize="11" fontWeight="bold">M{i+1}</text>
-              </g>
-          ))}
+          {Array.from({ length: Math.ceil(duration / beatDuration) }).map((_, i) => {
+              const x = paddingLeft + (i * beatDuration * zoom);
+              const isMeasure = i % tsNum === 0;
+              return (
+                  <g key={i}>
+                      {isMeasure && <line x1={x} y1={tabTop} x2={x} y2={tabTop + 100} stroke="#1e293b" strokeWidth="2" />}
+                      {isMeasure && <text x={x + 5} y={tabTop - 15} fontSize="11" fontWeight="bold">M{Math.floor(i/tsNum)+1}</text>}
+                      <circle cx={x} cy={tabTop + 120} r="3" fill={isMeasure ? "#1e293b" : "#cbd5e1"} />
+                  </g>
+              );
+          })}
 
           {[0, 1, 2, 3, 4, 5].map(l => (
               <line key={l} x1={paddingLeft} y1={tabTop + l * tabLineSpacing} x2={width + paddingLeft} y2={tabTop + l * tabLineSpacing} stroke="#cbd5e1" strokeWidth="1" />
@@ -238,7 +252,7 @@ const TabRendererSVG: React.FC<TabRendererSVGProps> = ({ notes, duration, audioR
                         if (f >= 0 && f <= 24) {
                             const optY = tabTop + idx * tabLineSpacing;
                             return (
-                                <g key={`${n.id}-opt-${s}`} onClick={(e) => { e.stopPropagation(); reassignNote(n.id, s, f); }} style={{ cursor: 'pointer' }}>
+                                <g key={`${n.id}-opt-${s}`} onClick={(e) => { e.stopPropagation(); const newNotes = notes.map(note => note.id === n.id ? { ...note, s, f } : note); onUpdateNotes(newNotes); setActiveEditingNoteId(null); }} style={{ cursor: 'pointer' }}>
                                     <circle cx={x} cy={optY} r="9" fill="white" stroke="#ef4444" strokeWidth="1" />
                                     <text x={x} y={optY + 4} textAnchor="middle" style={{ fontSize: '11px', fontWeight: 'bold', fill: '#ef4444', fontFamily: 'monospace', userSelect: 'none' }}>{f}</text>
                                 </g>
