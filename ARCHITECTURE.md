@@ -1,47 +1,37 @@
 # TabMaker Architecture
 
-TabMaker is an AI-powered web application designed to isolate guitar solos from audio sources and transcribe them into interactive guitar tablature.
+TabMaker is an AI-powered web application that handles the entire lifecycle of guitar solo transcription, from spectral isolation to professional tablature rendering.
 
 ## Tech Stack
 
 ### Backend (Python / FastAPI)
-- **Framework**: FastAPI for a high-performance asynchronous API.
-- **Audio Processing**: 
-  - `librosa`: For spectral analysis, STFT/iSTFT masking, and spectrogram generation.
-  - `pydub`: For audio slicing and format conversion.
-- **AI Models**:
-  - `Demucs (htdemucs_6s)`: Hybrid Transformer model for high-fidelity stem separation (Guitar, Piano, Bass, Drums, Vocals, Other).
-  - `Basic Pitch`: Spotify's neural network for high-resolution audio-to-MIDI transcription.
-- **Persistence**: File-based session management in `temp_uploads/` with session ID tracking.
+- **Framework**: FastAPI for high-performance, asynchronous endpoints.
+- **Audio Intelligence**:
+  - `Demucs (htdemucs_6s)`: Hybrid Transformer model for 6-stem high-fidelity isolation.
+  - `Basic Pitch`: Spotify's multi-pitch estimation model for audio-to-MIDI conversion.
+- **Logic Filters ("The Guitarist's Brain")**:
+  - **Harmonic Tilt**: FFmpeg shelf EQ filter (`lowshelf=f=500:g=3, highshelf=f=2000:g=-10`) applied before transcription to suppress overtone "ghosts."
+  - **Temporal Stitching**: Bridging algorithm that merges notes of identical pitch occurring within 100ms gaps.
+  - **Strum Grouping**: Logic that consolidates note onsets within 80ms into a single physical chord event.
+  - **Recursive Reach Guard**: Pitch-normalizer that drops outlier notes by 12-semitone increments until they fit within a 6-fret "human hand" span.
+- **Spectral Masking**: iSTFT-based reconstruction that zeros out all frequency bins outside the user's Lasso coordinates for "Ghost Audio" previews.
 
 ### Frontend (React / TypeScript)
-- **Bundler**: Vite for fast development and optimized builds.
-- **Audio Visualization**: Custom HTML5 Canvas implementation for the **Interactive Spectral Lasso** (spectrogram with AI overlays).
-- **Tablature Rendering**: Custom **SVG-based Renderer** (bypassing external libraries for 100% reliability).
-  - Features: Multi-measure layout, 12/8 time support, rhythmic stems/flags, and a moving playhead.
-- **Audio Engine**: Web Audio API for a plucky "Twangy" guitar synthesizer to audit transcriptions.
-- **Export**: `jsPDF` for multi-page, professionally formatted PDF tablature.
+- **Interactive Spectrogram**: Custom HTML5 Canvas implementation supporting 2D Lasso selection, multi-track overlays, and real-time playhead sync.
+- **Pro SVG Tab Renderer**: Built from scratch to bypass 3rd-party library bugs.
+  - **Octave Snapping Engine**: Real-time logic that recalculates both string AND octave as the neck position slider moves.
+  - **Area Selection Logic**: Time-range based masking that allows localized neck optimization.
+  - **Meter Engine**: Draws beat-correlated markers and sustain-ties based on BPM-to-seconds mapping.
+- **Synth Engine**: Web Audio API implementation using a Sawtooth/Square waveform mix and resonant low-pass filter for a "plucky" guitar timbre.
 
-## Handling Large Files (Machine Learning Models)
-
-To keep the repository lightweight and follow best practices, we do **not** commit the following to Git:
-1. **Virtual Environments (`venv/`)**: These contain the multi-gigabyte TensorFlow/Torch installations.
-2. **Model Weights**: Files like `.pth` or `.h5` are automatically downloaded by the libraries (`demucs`, `basic-pitch`) on the first run and stored in the user's local cache (e.g., `~/.cache`).
-3. **User Data**: The `temp_uploads/` folder is ignored to protect privacy and storage.
-
-Users can set up the project by running:
-```bash
-# Backend
-cd backend && python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd frontend && npm install
-```
+## Data Persistence & Export
+- **Session Tracking**: Session IDs stored in `localStorage` map to directories in `temp_uploads/`.
+- **WAV Export**: Direct serving of isolated AI stems.
+- **PDF Export**: `jsPDF` multi-line drawing logic that maps SVG coordinates to printable PT units.
 
 ## System Workflow
-1. **Ingest**: YouTube URL (via `yt-dlp` with browser cookies) or local file.
-2. **Isolate**: `htdemucs_6s` separates the solo from the backing track.
-3. **Verify**: User uses the **Spectral Lasso** to visually confirm the solo and listen to "ghost" audio.
-4. **Optimize**: Interactive UI allows the user to shift the "box" (neck position) or manually reassign notes to different strings.
-5. **Export**: Save the final result as a PDF or raw MIDI.
+1. **Deep Ingest**: High-bitrate stream extraction via `yt-dlp` forced to 44.1kHz.
+2. **Spectral Selection**: User-guided isolation via the Lasso tool.
+3. **Optimized Transcription**: Backend logic filters ensure a playable initial result.
+4. **Interactive Refinement**: User fine-tunes fingering via the Neck Slider and individual note cycling.
+5. **Final Output**: PDF or MIDI generation.
