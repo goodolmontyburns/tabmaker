@@ -5,16 +5,23 @@ interface SoloVisionProps {
   spectrogramData: number[][] | null;
   duration: number;
   audioRef: React.RefObject<HTMLAudioElement | null>;
+  playheadOffset: number;
   onSelect: (minMidi: number, maxMidi: number, t1: number, t2: number) => void;
   onPreview: (minMidi: number, maxMidi: number, t1: number, t2: number) => void;
 }
 
-const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, duration, audioRef, onSelect, onPreview }) => {
+const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, duration, audioRef, playheadOffset, onSelect, onPreview }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [visibleLayers, setVisibleLayers] = useState<Record<string, boolean>>({ guitar: true });
+  const playheadOverlayRef = useRef<HTMLDivElement>(null);
+  const [visibleLayers, setVisibleLayers] = useState<Record<string, boolean>>({
+    guitar: true,
+    piano: true,
+    vocals: true,
+    other: true,
+    bass: true
+  });
   const [selection, setSelection] = useState<{ x1: number, y1: number, x2: number, y2: number } | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [playheadX, setPlayheadX] = useState(0);
 
   const colors: Record<string, string> = {
     guitar: '255, 20, 147',
@@ -24,9 +31,16 @@ const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, 
     bass: '46, 204, 113'
   };
 
+  const updatePlayheadDOM = (time: number) => {
+    if (!playheadOverlayRef.current) return;
+    const ratio = Math.max(0, Math.min(duration, time)) / duration;
+    playheadOverlayRef.current.style.left = `${ratio * 100}%`;
+    playheadOverlayRef.current.style.display = 'block';
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !spectrogramData || !spectrogramData.length) return;
+    if (!canvas || !spectrogramData || !spectrogramData.length || !spectrogramData[0]) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -40,28 +54,32 @@ const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, 
 
     for (let i = 0; i < freqs; i++) {
         for (let j = 0; j < frames; j++) {
-            const val = (spectrogramData[i][j] + 80) / 80;
-            if (val > 0.1) {
-                const intensity = Math.floor(val * 100);
-                ctx.fillStyle = `rgb(0, ${intensity}, ${intensity})`; 
-                ctx.fillRect(j * cellW, canvas.height - (i * cellH), cellW + 1, cellH + 1);
+            if (spectrogramData[i] && spectrogramData[i][j] !== undefined) {
+                const val = (spectrogramData[i][j] + 80) / 80;
+                if (val > 0.1) {
+                    const intensity = Math.floor(val * 100);
+                    ctx.fillStyle = `rgb(0, ${intensity}, ${intensity})`; 
+                    ctx.fillRect(j * cellW, canvas.height - (i * cellH), cellW + 1, cellH + 1);
+                }
             }
         }
     }
 
     if (visionLayers) {
         Object.entries(visionLayers).forEach(([stem, data]) => {
-            if (!visibleLayers[stem] || !data) return;
+            if (!visibleLayers[stem] || !data || !data.length) return;
             const vFrames = data.length;
             const vCellW = canvas.width / vFrames;
             const vCellH = canvas.height / 88;
             const color = colors[stem] || '255, 255, 255';
             for (let f = 0; f < vFrames; f++) {
-                for (let n = 0; n < 88; n++) {
-                    const prob = data[f][n];
-                    if (prob > 0.15) {
-                        ctx.fillStyle = `rgba(${color}, ${prob})`;
-                        ctx.fillRect(f * vCellW, canvas.height - (n * vCellH), vCellW + 1, vCellH + 1);
+                if (data[f]) {
+                    for (let n = 0; n < 88; n++) {
+                        const prob = data[f][n];
+                        if (prob > 0.15) {
+                            ctx.fillStyle = `rgba(${color}, ${prob})`;
+                            ctx.fillRect(f * vCellW, canvas.height - (n * vCellH), vCellW + 1, vCellH + 1);
+                        }
                     }
                 }
             }
@@ -76,24 +94,89 @@ const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, 
         ctx.fillRect(Math.min(selection.x1, selection.x2), Math.min(selection.y1, selection.y2), Math.abs(selection.x2 - selection.x1), Math.abs(selection.y2 - selection.y1));
     }
 
-    ctx.strokeStyle = '#fff';
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(playheadX, 0);
-    ctx.lineTo(playheadX, canvas.height);
-    ctx.stroke();
+  }, [spectrogramData, visionLayers, visibleLayers, selection]);
 
-  }, [spectrogramData, visionLayers, visibleLayers, selection, playheadX]);
+  const playheadOffsetRef = useRef<number>(playheadOffset);
+  useEffect(() => {
+    playheadOffsetRef.current = playheadOffset;
+  }, [playheadOffset]);
+
+  // Instantly sync playhead when playheadOffset or duration changes (while paused)
+  useEffect(() => {
+    const audio = document.getElementById('reference-audio') as HTMLAudioElement;
+    if (audio && audio.paused) {
+      updatePlayheadDOM(audio.currentTime - playheadOffset);
+    }
+  }, [playheadOffset, duration]);
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = document.getElementById('reference-audio') as HTMLAudioElement || audioRef.current;
     if (!audio) return;
-    const update = () => {
-        const ratio = audio.currentTime / duration;
-        setPlayheadX(ratio * (canvasRef.current?.width || 0));
+    
+    let lastAudioTime = audio.currentTime;
+    let lastSyncTime = performance.now();
+    let animationFrameId: number = 0;
+
+    const cancelAnimation = () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
     };
-    audio.addEventListener('timeupdate', update);
-    return () => audio.removeEventListener('timeupdate', update);
+
+    const animatePlayhead = () => {
+      const now = performance.now();
+      if (audio.currentTime !== lastAudioTime) {
+        lastAudioTime = audio.currentTime;
+        lastSyncTime = now;
+      }
+      const elapsedSinceSync = (now - lastSyncTime) / 1000;
+      const interpolated = lastAudioTime + Math.min(0.5, elapsedSinceSync * audio.playbackRate);
+      
+      const visualTime = Math.max(0, Math.min(duration, interpolated - playheadOffsetRef.current));
+      updatePlayheadDOM(visualTime);
+      
+      if (!audio.paused) {
+        cancelAnimation();
+        animationFrameId = requestAnimationFrame(animatePlayhead);
+      }
+    };
+
+    const handlePlay = () => {
+      lastAudioTime = audio.currentTime;
+      lastSyncTime = performance.now();
+      cancelAnimation();
+      animationFrameId = requestAnimationFrame(animatePlayhead);
+    };
+
+    const handlePause = () => {
+      cancelAnimation();
+      updatePlayheadDOM(audio.currentTime - playheadOffsetRef.current);
+    };
+
+    const handleSeeked = () => {
+      updatePlayheadDOM(audio.currentTime - playheadOffsetRef.current);
+    };
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('seeked', handleSeeked);
+
+    // Initial sync
+    updatePlayheadDOM(audio.currentTime - playheadOffsetRef.current);
+
+    // If already playing, start animation loop
+    if (!audio.paused) {
+      cancelAnimation();
+      animationFrameId = requestAnimationFrame(animatePlayhead);
+    }
+
+    return () => {
+      cancelAnimation();
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('seeked', handleSeeked);
+    };
   }, [duration, audioRef]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -139,11 +222,28 @@ const SoloVision: React.FC<SoloVisionProps> = ({ visionLayers, spectrogramData, 
                 </label>
             ))}
         </div>
-        <canvas 
-            ref={canvasRef} width={1200} height={400} 
-            onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
-            style={{ width: '100%', height: '400px', cursor: 'crosshair', borderRadius: '8px', border: '1px solid #444' }}
-        />
+        <div style={{ position: 'relative', width: '100%', height: '400px' }}>
+            <canvas 
+                ref={canvasRef} width={1200} height={400} 
+                onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+                style={{ width: '100%', height: '400px', cursor: 'crosshair', borderRadius: '8px', border: '1px solid #444' }}
+            />
+            <div 
+                ref={playheadOverlayRef} 
+                style={{ 
+                    position: 'absolute', 
+                    top: 0, 
+                    bottom: 0, 
+                    left: 0, 
+                    width: '2px', 
+                    backgroundColor: '#fff', 
+                    pointerEvents: 'none', 
+                    transition: 'none',
+                    display: 'none',
+                    boxShadow: '0 0 8px #fff'
+                }} 
+            />
+        </div>
         <div style={{ marginTop: '15px', display: 'flex', gap: '15px' }}>
             <button onClick={() => {
                 if (selection) {

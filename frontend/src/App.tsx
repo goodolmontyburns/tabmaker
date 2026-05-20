@@ -25,6 +25,10 @@ function App() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const [selectionParams, setSelectionParams] = useState<any>(null);
+  const [playheadOffset, setPlayheadOffset] = useState<number>(() => {
+    const saved = localStorage.getItem('tabmaker_playhead_offset');
+    return saved ? parseFloat(saved) : 0.0; // 0.0s default lead (perfect alignment)
+  });
 
   useEffect(() => {
     const saved = localStorage.getItem('last_tabmaker_session');
@@ -99,6 +103,17 @@ function App() {
     finally { setIsRetranscribing(false); }
   };
 
+  const handleUpdateNotes = async (newNotes: any[]) => {
+    setNotes(newNotes);
+    if (sessionID) {
+      try {
+        await axios.post(`http://localhost:8000/session/${sessionID}/notes`, { notes: newNotes });
+      } catch (e) {
+        console.error("Failed to save notes to backend session:", e);
+      }
+    }
+  };
+
   return (
     <div className="App">
       <h1>TabMaker</h1>
@@ -136,6 +151,7 @@ function App() {
                 spectrogramData={spectrogram} 
                 duration={duration}
                 audioRef={previewAudioRef}
+                playheadOffset={playheadOffset}
                 onSelect={() => {}}
                 onPreview={handlePreview}
             />
@@ -143,7 +159,7 @@ function App() {
 
           <div style={{ margin: '20px 0', padding: '15px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #dee2e6' }}>
             <strong>Reference Audio:</strong><br/>
-            <audio ref={previewAudioRef} controls src={previewUrl || originalAudio || undefined} style={{ width: '100%', marginTop: '5px' }} />
+            <audio id="reference-audio" ref={previewAudioRef} controls src={previewUrl || originalAudio || undefined} style={{ width: '100%', marginTop: '5px' }} />
           </div>
 
           {selectionParams && (
@@ -168,7 +184,9 @@ function App() {
             notes={notes} 
             duration={duration} 
             audioRef={previewAudioRef} 
-            onUpdateNotes={(newNotes) => setNotes(newNotes)} 
+            playheadOffset={playheadOffset}
+            setPlayheadOffset={setPlayheadOffset}
+            onUpdateNotes={handleUpdateNotes} 
           />
           
           <div style={{ marginTop: '40px' }}>
