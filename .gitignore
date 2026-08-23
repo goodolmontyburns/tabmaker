@@ -1,7 +1,9 @@
-# Python
 backend/venv/
 backend/__pycache__/
 backend/temp_uploads/
+temp_uploads/
+*.wav
+*.mp4
 backend/*.log
 *.log
 

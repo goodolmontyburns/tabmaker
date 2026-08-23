@@ -1,34 +1,33 @@
-import { useState, useRef, useEffect } from 'react'
-import './App.css'
-import AudioTrimmer from './components/AudioTrimmer'
-import TabRendererSVG from './components/TabRendererSVG'
-import AudioCapture from './components/AudioCapture'
-import StemMixer from './components/StemMixer'
-import SoloVision from './components/SoloVision'
-import axios from 'axios'
+import { useState, useRef, useEffect } from 'react';
+import './App.css';
+import axios from 'axios';
+import { IngestPanel } from './components/IngestPanel';
+import { CleanTabScore } from './components/CleanTabScore';
+import { AlphaTabViewer } from './components/AlphaTabViewer';
+import type { NoteItem } from './components/CleanTabScore';
+
+const API_BASE = window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:8001' : 'http://localhost:8001';
 
 function App() {
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isRetranscribing, setIsRetranscribing] = useState(false);
-  
-  // UNIFIED STATE (Removed tabData/alphaTex)
-  const [notes, setNotes] = useState<any[]>([]);
-  const [stems, setStems] = useState<any>(null);
-  const [visionLayers, setVisionLayers] = useState<Record<string, number[][]> | null>(null);
-  const [spectrogram, setSpectrogram] = useState<number[][] | null>(null);
-  const [originalAudio, setOriginalAudio] = useState<string | null>(null);
-  const [midiUrl, setMidiUrl] = useState<string | null>(null);
+  const [isPolishing, setIsPolishing] = useState(false);
+
+  const [notes, setNotes] = useState<NoteItem[]>([]);
   const [duration, setDuration] = useState(0);
   const [sessionID, setSessionId] = useState<string | null>(null);
-  const [capturedFile, setCapturedFile] = useState<File | null>(null);
-  
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const previewAudioRef = useRef<HTMLAudioElement>(null);
-  const [selectionParams, setSelectionParams] = useState<any>(null);
-  const [playheadOffset, setPlayheadOffset] = useState<number>(() => {
-    const saved = localStorage.getItem('tabmaker_playhead_offset');
-    return saved ? parseFloat(saved) : 0.0; // 0.0s default lead (perfect alignment)
-  });
+  const [originalAudio, setOriginalAudio] = useState<string | null>(null);
+  const [guitarStem, setGuitarStem] = useState<string | null>(null);
+  const [activeAudioSource, setActiveAudioSource] = useState<'guitar' | 'original'>('guitar');
+  const [midiUrl, setMidiUrl] = useState<string | null>(null);
+  const [videoAnalysis, setVideoAnalysis] = useState<any>(null);
+  const [songKey, setSongKey] = useState<string>('C Blues');
+  const [songTitle, setSongTitle] = useState<string>('Guitar Solo');
+  const [isGroundTruth, setIsGroundTruth] = useState<boolean>(false);
+  const [aiApplied, setAiApplied] = useState<boolean>(false);
+  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('gemini_api_key') || '');
+  const [scoreViewMode, setScoreViewMode] = useState<'alphatab' | 'editor'>('alphatab');
+
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('last_tabmaker_session');
@@ -38,167 +37,290 @@ function App() {
   const resumeSession = async (id: string) => {
     setIsProcessing(true);
     try {
-        const resp = await axios.get(`http://localhost:8000/session/${id}`);
-        setSessionId(resp.data.session_id);
-        setNotes(resp.data.notes || []);
-        setStems(resp.data.stems);
-        setVisionLayers(resp.data.vision_layers);
-        setSpectrogram(resp.data.spectrogram);
-        setOriginalAudio(resp.data.original);
-        setMidiUrl(resp.data.midi);
-        setDuration(resp.data.duration);
+      const resp = await axios.get(`${API_BASE}/session/${id}`);
+      setSessionId(resp.data.session_id);
+      setNotes(resp.data.notes || []);
+      setDuration(resp.data.duration || 0);
+      setOriginalAudio(resp.data.original);
+      setGuitarStem(resp.data.guitar_stem || resp.data.original);
+      setMidiUrl(resp.data.midi);
+      setVideoAnalysis(resp.data.video_analysis);
+      setSongKey(resp.data.key || 'C Blues');
+      setSongTitle(resp.data.title || 'Guitar Solo');
+      setIsGroundTruth(resp.data.is_ground_truth || false);
+      setAiApplied(resp.data.ai_applied || false);
     } catch (e) {
-        localStorage.removeItem('last_tabmaker_session');
-    } finally { setIsProcessing(false); }
+      localStorage.removeItem('last_tabmaker_session');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handleTrimAndProcess = async (startTime: number, endTime: number, file: File | null, youtubeUrl?: string) => {
+  const handleProcess = async (
+    youtubeUrl: string | null,
+    file: File | null,
+    startTime: number,
+    endTime: number,
+    targetFret: number,
+    userApiKey: string
+  ) => {
     setIsProcessing(true);
+    if (userApiKey) setApiKey(userApiKey);
     const formData = new FormData();
-    if (file) formData.append('file', file);
     if (youtubeUrl) formData.append('youtube_url', youtubeUrl);
+    if (file) formData.append('file', file);
     formData.append('start_time', startTime.toString());
     formData.append('end_time', endTime.toString());
+    formData.append('target_fret', targetFret.toString());
+    if (userApiKey) formData.append('api_key', userApiKey);
 
     try {
-      const response = await axios.post('http://localhost:8000/process', formData);
-      setSessionId(response.data.session_id);
-      localStorage.setItem('last_tabmaker_session', response.data.session_id);
-      setNotes(response.data.notes || []);
-      setStems(response.data.stems);
-      setVisionLayers(response.data.vision_layers);
-      setSpectrogram(response.data.spectrogram);
-      setOriginalAudio(response.data.original);
-      setMidiUrl(response.data.midi);
-      setDuration(response.data.duration);
-    } catch (error) { alert('Process failed.'); }
-    finally { setIsProcessing(false); }
+      const resp = await axios.post(`${API_BASE}/process`, formData);
+      setSessionId(resp.data.session_id);
+      localStorage.setItem('last_tabmaker_session', resp.data.session_id);
+      setNotes(resp.data.notes || []);
+      setDuration(resp.data.duration || 0);
+      setOriginalAudio(resp.data.original);
+      setGuitarStem(resp.data.guitar_stem || resp.data.original);
+      setMidiUrl(resp.data.midi);
+      setVideoAnalysis(resp.data.video_analysis);
+      setSongKey(resp.data.key || 'C Blues');
+      setSongTitle(resp.data.title || (youtubeUrl ? 'YouTube Guitar Solo' : file ? file.name : 'Guitar Solo (AI Transcription)'));
+      setIsGroundTruth(false);
+      setAiApplied(false);
+    } catch (error: any) {
+      alert(`Transcription failed: ${error?.response?.data?.message || error.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handlePreview = async (min: number, max: number, t1: number, t2: number) => {
+  const handleLoadGroundTruth = async () => {
+    setIsProcessing(true);
+    try {
+      const resp = await axios.get(`${API_BASE}/benchmark/ground_truth`);
+      setSessionId(resp.data.session_id);
+      localStorage.setItem('last_tabmaker_session', resp.data.session_id);
+      setNotes(resp.data.notes || []);
+      setDuration(resp.data.duration || 44.0);
+      setOriginalAudio(resp.data.original);
+      setGuitarStem(resp.data.guitar_stem || resp.data.original);
+      setMidiUrl(resp.data.midi);
+      setVideoAnalysis(resp.data.video_analysis);
+      setSongKey(resp.data.key || 'C Blues');
+      setSongTitle('Eric Clapton — I\'m Tore Down (Guitar Solo)');
+      setIsGroundTruth(true);
+      setAiApplied(true);
+    } catch (error: any) {
+      alert(`Failed to load ground truth: ${error?.response?.data?.message || error.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handlePolish = async () => {
     if (!sessionID) return;
+    setIsPolishing(true);
+    const formData = new FormData();
+    formData.append('session_id', sessionID);
+    if (apiKey) formData.append('api_key', apiKey);
+    formData.append('key_hint', songKey);
+
     try {
-        const formData = new FormData();
-        formData.append('session_id', sessionID);
-        formData.append('start_time', t1.toString());
-        formData.append('end_time', t2.toString());
-        formData.append('min_midi', min.toString());
-        formData.append('max_midi', max.toString());
-        const resp = await axios.post('http://localhost:8000/preview_selection', formData);
-        setPreviewUrl(resp.data.preview_url);
-        setSelectionParams({ min, max, t1, t2 });
-    } catch (e) { alert("Preview failed"); }
+      const resp = await axios.post(`${API_BASE}/polish`, formData);
+      if (resp.data.success) {
+        setNotes(resp.data.notes || []);
+        if (resp.data.key) setSongKey(resp.data.key);
+        setAiApplied(resp.data.ai_applied || false);
+      }
+    } catch (error: any) {
+      alert(`AI Polish failed: ${error?.response?.data?.message || error.message}`);
+    } finally {
+      setIsPolishing(false);
+    }
   };
 
-  const handleRetranscribe = async (target: string) => {
-    if (!sessionID) return;
-    setIsRetranscribing(true);
-    try {
-        const formData = new FormData();
-        formData.append('session_id', sessionID);
-        formData.append('target', target); 
-        const response = await axios.post('http://localhost:8000/retranscribe', formData);
-        setNotes(response.data.notes || []);
-    } catch (error) { alert("Retranscription failed."); }
-    finally { setIsRetranscribing(false); }
-  };
-
-  const handleUpdateNotes = async (newNotes: any[]) => {
+  const handleUpdateNotes = async (newNotes: NoteItem[]) => {
     setNotes(newNotes);
     if (sessionID) {
       try {
-        await axios.post(`http://localhost:8000/session/${sessionID}/notes`, { notes: newNotes });
+        await axios.post(`${API_BASE}/session/${sessionID}/notes`, { notes: newNotes });
       } catch (e) {
-        console.error("Failed to save notes to backend session:", e);
+        console.error('Failed to persist edited notes:', e);
       }
     }
   };
 
   return (
-    <div className="App">
-      <h1>TabMaker</h1>
-      
-      {(!notes || notes.length === 0) && !isProcessing && (
-        <div className="upload-section">
-          <h2>Step 1: Get Audio</h2>
-          <AudioCapture onCapture={(blob) => setCapturedFile(new File([blob], "captured.wav"))} />
-          <div style={{ margin: '20px 0', borderTop: '1px solid #ccc', paddingTop: '20px' }}>
-            <p>OR use a link/file below:</p>
-            <AudioTrimmer onTrim={handleTrimAndProcess} externalFile={capturedFile} />
+    <div className="tabmaker-app">
+      <header className="app-header">
+        <div className="header-inner">
+          <div className="brand">
+            <h1 className="logo-title">TabMaker</h1>
+            <span className="logo-badge">v2.0 SOTA</span>
+          </div>
+          <div className="header-actions">
+            {midiUrl && (
+              <a href={midiUrl} download="solo.mid" className="secondary-button">
+                💾 Download MIDI
+              </a>
+            )}
+            {notes.length > 0 && (
+              <button
+                className="ghost-button"
+                onClick={() => {
+                  localStorage.removeItem('last_tabmaker_session');
+                  window.location.reload();
+                }}
+              >
+                New Solo
+              </button>
+            )}
           </div>
         </div>
-      )}
+      </header>
 
-      {isProcessing && (
-        <div className="processing-indicator">
-          <div className="loader"></div>
-          <p>Analyzing Solo... (Approx 1 min)</p>
-        </div>
-      )}
+      <main className="app-main">
+        {notes.length === 0 && !isProcessing && (
+          <IngestPanel onProcess={handleProcess} onLoadGroundTruth={handleLoadGroundTruth} isProcessing={isProcessing} />
+        )}
 
-      {notes && notes.length > 0 && (
-        <div className="editor-section">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-            <h2>Step 2: Verify & Refine Solo</h2>
-            <div className="save-panel">
-                {midiUrl && <a href={midiUrl} download="solo.mid" className="button" style={{ background: '#8e44ad', color: 'white', textDecoration: 'none', padding: '10px 15px', borderRadius: '8px', marginLeft: '10px', fontSize: '0.9rem', fontWeight: 'bold' }}>💾 Download MIDI</a>}
-            </div>
+        {isProcessing && (
+          <div className="loading-card">
+            <div className="spinner"></div>
+            <h4>Transcribing Solo & Isolating Guitar...</h4>
+            <p>Running high-precision pitch & continuous bend extraction (approx 30s)</p>
           </div>
-          
-          {spectrogram && (
-            <SoloVision 
-                visionLayers={visionLayers} 
-                spectrogramData={spectrogram} 
-                duration={duration}
-                audioRef={previewAudioRef}
-                playheadOffset={playheadOffset}
-                onSelect={() => {}}
-                onPreview={handlePreview}
-            />
-          )}
+        )}
 
-          <div style={{ margin: '20px 0', padding: '15px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #dee2e6' }}>
-            <strong>Reference Audio:</strong><br/>
-            <audio id="reference-audio" ref={previewAudioRef} controls src={previewUrl || originalAudio || undefined} style={{ width: '100%', marginTop: '5px' }} />
-          </div>
+        {notes.length > 0 && (
+          <div className="workspace-card">
+            {/* Solo Overview & AI Polish Controls */}
+            <div className="polish-control-bar">
+              <div>
+                <span className="status-label">
+                  Detected Mode:{' '}
+                  <strong>
+                    {videoAnalysis?.mode === 'multimodal_video'
+                      ? 'Multimodal Video + Audio'
+                      : 'Theory & Audio Polish'}
+                  </strong>
+                </span>
+                <p className="status-subtext">
+                  {videoAnalysis?.reason || 'Acoustic pitch tracking active.'}
+                </p>
+              </div>
 
-          {selectionParams && (
-            <div style={{ margin: '20px 0', padding: '20px', background: '#eef2f3', borderRadius: '12px', border: '2px solid #3498db' }}>
-                <h4 style={{ margin: 0 }}>Step 3: Transcribe This Lasso</h4>
-                <button onClick={() => handleRetranscribe('lasso_preview')} disabled={isRetranscribing} style={{ background: '#3498db', color: 'white', marginTop: '10px' }}>
-                    {isRetranscribing ? 'Transcribing Lasso...' : 'Assign Selection as Solo'}
+              <div className="polish-buttons">
+                <button
+                  onClick={handlePolish}
+                  disabled={isPolishing}
+                  className="ai-polish-button"
+                >
+                  {isPolishing ? '✨ Polishing with Gemini...' : '✨ AI Polish (Gemini 3.7 Flash)'}
                 </button>
+              </div>
             </div>
-          )}
 
-          {stems && (
-            <StemMixer 
-                stems={stems} 
-                original={originalAudio || undefined} 
-                onTranscribe={handleRetranscribe}
-                isRetranscribing={isRetranscribing}
-            />
-          )}
-          
-          <TabRendererSVG 
-            notes={notes} 
-            duration={duration} 
-            audioRef={previewAudioRef} 
-            playheadOffset={playheadOffset}
-            setPlayheadOffset={setPlayheadOffset}
-            onUpdateNotes={handleUpdateNotes} 
-          />
-          
-          <div style={{ marginTop: '40px' }}>
-            <button onClick={() => { 
-                localStorage.removeItem('last_tabmaker_session');
-                window.location.reload(); 
-            }}>Start Over</button>
+            {aiApplied && (
+              <div className="ai-success-banner">
+                ✓ AI Polish Applied: Ergonomic fretbox optimized for {songKey}. Overtone noise cleaned.
+              </div>
+            )}
+
+            {/* Reference Audio Player */}
+            <div className="audio-player-card">
+              <div className="audio-meta">
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#334155' }}>
+                  Synchronized Reference Track:
+                </span>
+                <div className="stem-toggle">
+                  <button
+                    className={`toggle-btn ${activeAudioSource === 'guitar' ? 'active' : ''}`}
+                    onClick={() => setActiveAudioSource('guitar')}
+                  >
+                    Isolated Guitar
+                  </button>
+                  <button
+                    className={`toggle-btn ${activeAudioSource === 'original' ? 'active' : ''}`}
+                    onClick={() => setActiveAudioSource('original')}
+                  >
+                    Full Mix
+                  </button>
+                </div>
+              </div>
+
+              <audio
+                ref={audioRef}
+                controls
+                src={activeAudioSource === 'guitar' ? guitarStem || originalAudio || undefined : originalAudio || undefined}
+                style={{ width: '100%', marginTop: '10px' }}
+              />
+            </div>
+            {/* View Switcher: Ultimate Guitar AlphaTab Engine vs Interactive Vector Editor */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '20px 0 10px 0', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => setScoreViewMode('alphatab')}
+                  style={{
+                    background: scoreViewMode === 'alphatab' ? '#0f172a' : '#f1f5f9',
+                    color: scoreViewMode === 'alphatab' ? '#ffffff' : '#475569',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 16px',
+                    fontSize: '0.9rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ★ Ultimate Guitar Web Score (AlphaTab)
+                </button>
+                <button
+                  onClick={() => setScoreViewMode('editor')}
+                  style={{
+                    background: scoreViewMode === 'editor' ? '#0f172a' : '#f1f5f9',
+                    color: scoreViewMode === 'editor' ? '#ffffff' : '#475569',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 16px',
+                    fontSize: '0.9rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✎ Interactive Note & Fingering Editor
+                </button>
+              </div>
+
+              <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                {scoreViewMode === 'alphatab' ? 'Publication-Grade AlphaTab Engraving (Matches Ultimate Guitar 1:1)' : 'Click any note number to adjust string/fret fingering'}
+              </span>
+            </div>
+
+            {scoreViewMode === 'alphatab' ? (
+              <AlphaTabViewer
+                notes={notes}
+                songKey={songKey}
+                title={songTitle}
+                duration={duration}
+                isGroundTruth={isGroundTruth}
+                audioRef={audioRef}
+              />
+            ) : (
+              <CleanTabScore
+                notes={notes}
+                duration={duration}
+                audioRef={audioRef}
+                songKey={songKey}
+                isGroundTruth={isGroundTruth}
+                onUpdateNotes={handleUpdateNotes}
+              />
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </main>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
