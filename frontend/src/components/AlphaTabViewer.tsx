@@ -30,13 +30,17 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<alphaTab.AlphaTabApi | null>(null);
   const scoreEndTickRef = useRef<number>(0);
+  const pendingSynthPlayRef = useRef<boolean>(false);
+  const didInitTexRef = useRef<boolean>(false);
+  const isSynthPlayingRef = useRef<boolean>(false);
 
   const [activeTabMode, setActiveTabMode] = useState<'official' | 'transcribed'>(
     isGroundTruth ? 'official' : 'transcribed'
   );
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isSynthPlaying, setIsSynthPlaying] = useState(false);
+  const [isSynthReady, setIsSynthReady] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [isScoreReady, setIsScoreReady] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
 
   const safeTempo = isGroundTruth ? 131 : Math.max(40, Math.min(240, Math.round(tempo || 120)));
@@ -55,9 +59,11 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     settings.core.tex = true;
     settings.display.layoutMode = alphaTab.LayoutMode.Page;
     settings.display.staveProfile = alphaTab.StaveProfile.ScoreTab;
-    settings.player.enablePlayer = true;
+    settings.player.playerMode = alphaTab.PlayerMode.EnabledSynthesizer;
     settings.player.enableCursor = true;
+    settings.player.enableAnimatedBeatCursor = true;
     settings.player.soundFont = '/soundfont/sonivox.sf2';
+    settings.player.scrollElement = 'html,body';
 
     try {
       if (apiRef.current) {
@@ -68,7 +74,6 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
       apiRef.current = api;
 
       api.scoreLoaded.on((score) => {
-        setIsScoreReady(true);
         setRenderError(null);
         if (score && score.masterBars && score.masterBars.length > 0) {
           const lastBar = score.masterBars[score.masterBars.length - 1];
@@ -76,13 +81,30 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
         }
       });
 
-      api.error.on((err) => {
+      api.playerReady.on(() => {
+        setIsSynthReady(true);
+        if (pendingSynthPlayRef.current) {
+          pendingSynthPlayRef.current = false;
+          api.playPause();
+        }
+      });
+
+      api.player?.soundFontLoadFailed.on((e: any) => {
+        pendingSynthPlayRef.current = false;
+        setRenderError(`SoundFont failed to load: ${e?.message || e}`);
+      });
+
+      api.error.on((err: any) => {
         console.error('AlphaTab API Error:', err);
-        setRenderError(err?.message || 'AlphaTab render error');
+        pendingSynthPlayRef.current = false;
+        const diag = err?.cause?.parserDiagnostics?.items?.[0]?.message;
+        setRenderError(diag ? `${err.message}: ${diag}` : (err?.message || 'AlphaTab render error'));
       });
 
       api.playerStateChanged.on((args) => {
-        setIsPlaying(args.state === alphaTab.synth.PlayerState.Playing);
+        const playing = args.state === alphaTab.synth.PlayerState.Playing;
+        isSynthPlayingRef.current = playing;
+        setIsSynthPlaying(playing);
       });
 
       api.tex(currentAlphaTex);
@@ -96,6 +118,9 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
         apiRef.current.destroy();
         apiRef.current = null;
       }
+      isSynthPlayingRef.current = false;
+      setIsSynthPlaying(false);
+      setIsSynthReady(false);
     };
   }, []);
 
@@ -107,6 +132,7 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     let rafId = 0;
 
     const syncCursorToAudio = () => {
+      if (isSynthPlayingRef.current) return;
       const api = apiRef.current;
       const totalDur = Math.max(duration || audio.duration || 1, 0.5);
       if (api && scoreEndTickRef.current > 0) {
@@ -123,12 +149,12 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     };
 
     const handlePlay = () => {
-      setIsPlaying(true);
+      setIsAudioPlaying(true);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(syncCursorToAudio);
     };
     const handlePause = () => {
-      setIsPlaying(false);
+      setIsAudioPlaying(false);
       if (rafId) cancelAnimationFrame(rafId);
     };
     const handleSeeked = () => {
@@ -150,7 +176,11 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
   }, [audioRef?.current, duration]);
 
   useEffect(() => {
-    if (apiRef.current && isScoreReady) {
+    if (!didInitTexRef.current) {
+      didInitTexRef.current = true;
+      return;
+    }
+    if (apiRef.current) {
       try {
         setRenderError(null);
         apiRef.current.tex(currentAlphaTex);
@@ -159,22 +189,22 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
         setRenderError(err?.message || 'AlphaTex parse error');
       }
     }
-  }, [currentAlphaTex, isScoreReady]);
+  }, [currentAlphaTex]);
 
   const togglePlay = () => {
+    if (isSynthPlayingRef.current && apiRef.current) {
+      apiRef.current.pause();
+    }
     const audio = audioRef?.current;
     if (audio && audio.src && audio.src.length > 0) {
       if (audio.paused) {
-        audio.play().then(() => setIsPlaying(true)).catch((e) => {
+        audio.play().then(() => setIsAudioPlaying(true)).catch((e) => {
           console.warn('Audio play failed:', e);
-          if (apiRef.current) apiRef.current.playPause();
         });
       } else {
         audio.pause();
-        setIsPlaying(false);
+        setIsAudioPlaying(false);
       }
-    } else if (apiRef.current) {
-      apiRef.current.playPause();
     }
   };
 
@@ -182,9 +212,15 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     const audio = audioRef?.current;
     if (audio && !audio.paused) {
       audio.pause();
+      setIsAudioPlaying(false);
     }
-    if (apiRef.current) {
-      apiRef.current.playPause();
+    const api = apiRef.current;
+    if (!api) return;
+    if (api.isReadyForPlayback) {
+      pendingSynthPlayRef.current = false;
+      api.playPause();
+    } else {
+      pendingSynthPlayRef.current = !pendingSynthPlayRef.current;
     }
   };
 
@@ -279,7 +315,7 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
           <button
             onClick={togglePlay}
             style={{
-              background: isPlaying ? '#dc2626' : '#2563eb',
+              background: isAudioPlaying ? '#dc2626' : '#2563eb',
               color: 'white',
               border: 'none',
               borderRadius: '6px',
@@ -289,23 +325,23 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
               cursor: 'pointer'
             }}
           >
-            {isPlaying ? '■ Pause Audio' : '▶ Play Audio'}
+            {isAudioPlaying ? '■ Pause Audio' : '▶ Play Audio'}
           </button>
 
           <button
             onClick={toggleTabSynth}
             style={{
-              background: '#f8fafc',
-              color: '#334155',
-              border: '1px solid #cbd5e1',
+              background: isSynthPlaying ? '#dc2626' : '#f8fafc',
+              color: isSynthPlaying ? '#ffffff' : '#334155',
+              border: isSynthPlaying ? 'none' : '1px solid #cbd5e1',
               borderRadius: '6px',
               padding: '6px 12px',
               fontSize: '0.85rem',
-              fontWeight: 500,
+              fontWeight: isSynthPlaying ? 600 : 500,
               cursor: 'pointer'
             }}
           >
-            Play Tab Synth
+            {isSynthPlaying ? '■ Pause Tab Synth' : (isSynthReady ? '▶ Play Tab Synth' : '⏳ Loading Synth...')}
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px', overflow: 'hidden' }}>

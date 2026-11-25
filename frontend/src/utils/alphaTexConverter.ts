@@ -49,28 +49,26 @@ function slotSpanToDurationToken(spanSlots: number, isTriplet: boolean): string 
 }
 
 function formatBendEffect(note: NoteItem): string {
-  let effect = '';
+  const parts: string[] = [];
   if (note.bend) {
     const bType = note.bend.type;
     const semis = note.bend.semitones ?? 2.0;
+    const units = Math.max(1, Math.min(8, Math.round(semis * 2)));
     if (bType === 'bend_release') {
-      const units = Math.max(1, Math.min(8, Math.round(semis * 2)));
-      effect += `{b (0 ${units} 0)}`;
+      parts.push(`b (0 ${units} 0)`);
     } else if (bType === 'release') {
-      const units = Math.max(1, Math.min(8, Math.round(semis * 2)));
-      effect += `{b (${units} 0)}`;
+      parts.push(`b (${units} 0)`);
     } else {
-      const units = Math.max(1, Math.min(8, Math.round(semis * 2)));
-      effect += `{b (0 ${units})}`;
+      parts.push(`b (0 ${units})`);
     }
   }
   if (note.slide === '/' || note.slide === '\\') {
-    effect += '{s}';
+    parts.push('s');
   }
   if (note.vibrato) {
-    effect += '{v}';
+    parts.push('v');
   }
-  return effect;
+  return parts.length > 0 ? `{${parts.join(' ')}}` : '';
 }
 
 export function convertNotesToAlphaTex(
@@ -207,16 +205,18 @@ export function convertNotesToAlphaTex(
       const chosenSpan = validSpans.find((v) => v <= durSlots) || 1;
       const durToken = slotSpanToDurationToken(chosenSpan, useTriplet);
 
-      if (items.length === 1) {
-        const n = items[0];
+      // Deduplicate same-string notes before formatting single note vs chord
+      const byString = new Map<number, NoteItem>();
+      items.forEach((n) => {
+        if (!byString.has(n.s)) byString.set(n.s, n);
+      });
+      const uniqueItems = Array.from(byString.values());
+
+      if (uniqueItems.length === 1) {
+        const n = uniqueItems[0];
         tokens.push(`${durToken} ${n.f}.${n.s}${formatBendEffect(n)}`);
       } else {
-        // Deduplicate same-string notes in a chord
-        const byString = new Map<number, NoteItem>();
-        items.forEach((n) => {
-          if (!byString.has(n.s)) byString.set(n.s, n);
-        });
-        const chordStr = Array.from(byString.values())
+        const chordStr = uniqueItems
           .map((n) => `${n.f}.${n.s}${formatBendEffect(n)}`)
           .join(' ');
         tokens.push(`${durToken} (${chordStr})`);
