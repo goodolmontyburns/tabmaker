@@ -26,3 +26,7 @@ Thumbs.db
 *.pth
 *.h5
 *.ckpt
+
+# Environment secrets
+.env
+.env.*

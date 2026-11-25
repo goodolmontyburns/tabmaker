@@ -6,7 +6,7 @@ interface IngestPanelProps {
     file: File | null,
     startTime: number,
     endTime: number,
-    targetFret: number,
+    targetFret: number | null,
     apiKey: string
   ) => void;
   onLoadGroundTruth?: () => void;
@@ -14,15 +14,19 @@ interface IngestPanelProps {
 }
 
 export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroundTruth, isProcessing }) => {
-  const [youtubeUrl, setYoutubeUrl] = useState('https://www.youtube.com/watch?v=vRcUufCKwOo');
-  const [startTime, setStartTime] = useState('79');   // 1:19 = 79s
-  const [endTime, setEndTime] = useState('123');     // 2:03 = 123s
-  const [targetFret, setTargetFret] = useState(8);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [startTime, setStartTime] = useState('0');
+  const [endTime, setEndTime] = useState('30');
+  const [targetFret, setTargetFret] = useState<string>('');
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [file, setFile] = useState<File | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!file && !youtubeUrl.trim()) {
+      alert('Please enter a YouTube URL or upload an audio file.');
+      return;
+    }
     const s = parseFloat(startTime) || 0;
     const end = parseFloat(endTime) || 0;
     if (end <= s) {
@@ -32,29 +36,22 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
     if (apiKey) {
       localStorage.setItem('gemini_api_key', apiKey.trim());
     }
+    const parsedFret = targetFret.trim() === '' ? null : Math.max(0, Math.min(20, parseInt(targetFret, 10) || 0));
     onProcess(
       file ? null : youtubeUrl.trim(),
       file,
       s,
       end,
-      targetFret,
+      parsedFret,
       apiKey.trim()
     );
-  };
-
-  const handleUrlChange = (newUrl: string) => {
-    setYoutubeUrl(newUrl);
-    if (!newUrl.includes('vRcUufCKwOo') && startTime === '79' && endTime === '123') {
-      setStartTime('0');
-      setEndTime('30');
-    }
   };
 
   const handleSetExampleClapton = () => {
     setYoutubeUrl('https://www.youtube.com/watch?v=vRcUufCKwOo');
     setStartTime('79');
     setEndTime('123');
-    setTargetFret(8);
+    setTargetFret('8');
     setFile(null);
   };
 
@@ -90,7 +87,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
                 cursor: 'pointer'
               }}
             >
-              ★ View Official Guitar Pro 3 Ground Truth (Measures 45–69)
+              View Benchmark Reference Tab
             </button>
           )}
           <button
@@ -106,7 +103,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
               cursor: 'pointer'
             }}
           >
-            Use Clapton YouTube Example
+            Load Clapton Example
           </button>
         </div>
       </div>
@@ -120,7 +117,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
             type="text"
             value={youtubeUrl}
             onChange={(e) => {
-              handleUrlChange(e.target.value);
+              setYoutubeUrl(e.target.value);
               if (file) setFile(null);
             }}
             placeholder="https://www.youtube.com/watch?v=..."
@@ -135,7 +132,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
           />
         </div>
 
-        <div style={{ display: 'flex', gap: '15px', alignItems: 'center', margin: '15px 0', fontSize: '0.85rem', color: '#64748b' }}>
+        <div style={{ display: 'flex', gap: '15px', alignItems: 'center', margin: '15px 0', fontSize: '0.85rem', color: '#64748b', flexWrap: 'wrap' }}>
           <span>— OR upload audio file —</span>
           <input
             type="file"
@@ -194,14 +191,15 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
 
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
-              Target Fret Box
+              Target Fret (Optional)
             </label>
             <input
               type="number"
               min="0"
-              max="17"
+              max="20"
+              placeholder="Auto from key"
               value={targetFret}
-              onChange={(e) => setTargetFret(parseInt(e.target.value, 10) || 8)}
+              onChange={(e) => setTargetFret(e.target.value)}
               style={{
                 width: '100%',
                 padding: '6px 10px',
@@ -219,7 +217,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
             </label>
             <input
               type="password"
-              placeholder="Detected from env or paste"
+              placeholder="Uses Vertex ADC if empty"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               style={{
@@ -249,7 +247,7 @@ export const IngestPanel: React.FC<IngestPanelProps> = ({ onProcess, onLoadGroun
               cursor: isProcessing ? 'not-allowed' : 'pointer'
             }}
           >
-            {isProcessing ? 'Analyzing Solo...' : '⚡ Transcribe Solo'}
+            {isProcessing ? 'Analyzing Solo...' : 'Transcribe Solo'}
           </button>
         </div>
       </form>

@@ -1,59 +1,53 @@
-# TabMaker: AI-Powered Guitar Transcription
+# TabMaker: Cloud-Accelerated Guitar Solo Transcription
 
-TabMaker is an advanced web application designed specifically for transcribing complex guitar solos (like classic blues) that traditional AI often struggles with. By combining state-of-the-art stem isolation with interactive spectral editing and a "Guitarist's Brain" logic filter, TabMaker produces playable, professionally formatted tablature.
+TabMaker converts guitar solos from YouTube URLs or uploaded audio files into playable 6-string guitar tablature with synchronized audio playback, interactive fingering editing, and AlphaTex/PDF/MIDI export.
 
-## 🚀 Key Features
+## Architecture Overview
 
-- **High-Fidelity "Deep" Ingestion**: Bypasses low-quality video audio to fetch 256kbps high-bitrate streams at 44.1kHz.
-- **Harmonic Tilt Filtering**: Uses FFmpeg to dampen overtones and boost fundamentals, forcing the AI to hear the correct octave.
-- **Interactive Spectral Lasso**: A 2D frequency map where you can visually identify solo "blobs" and draw boxes to isolate specific time/pitch segments.
-- **Guitarist's Brain Logic**:
-  - **Strum Grouping**: Automatically merges rapid-fire notes into cohesive chords.
-  - **Note Stitching**: Heals fragmented notes caused by heavy vibrato or recording noise.
-  - **Recursive Octave Guard**: Strictly forbids impossible frets (like 22 vs 2) by snapping outliers to the correct octave box.
-- **Pro SVG Tab Renderer**: 
-  - **Area Selection**: Click and drag to highlight phrases and shift them independently across the neck.
-  - **Octave Snapping Slider**: Move the neck position slider to instantly snap notes into the most playable "box."
-  - **Meter Visualization**: Accurate real-time beat markers (metronome dots) and measure lines based on adjustable time signatures.
-- **Twangy Audit Synth**: A resonant sawtooth-based synthesizer to audit your tab's melody and rhythm.
-- **Professional Export**: Multi-page PDF export with accurate time signatures and rhythmic formatting.
+TabMaker splits work cleanly between a lightweight local gateway on your computer and serverless AI on Google Cloud:
 
-## 🛠 Installation & Setup
+1. **Local Gateway (FastAPI + React/AlphaTab)**
+   - Downloads only the requested solo time slice (`yt-dlp --download-sections` + `ffmpeg` at 44.1 kHz stereo WAV and cropped `solo.mp4`).
+   - Serves the web UI, manages local session files (`temp_uploads/`), and runs the 6-string key-aware Viterbi fingering optimizer.
+2. **Cloud Run NVIDIA L4 GPU Worker (`cloud_worker/`)** — *Scales to zero when idle*
+   - **`Beat This!`**: Tracks real beat timestamps, downbeats (measure boundaries), and tempo directly from the full mix.
+   - **`BS-Roformer-SW` (via `audio-separator`)**: 6-stem separation extracting an isolated `guitar.wav` stem and a `backing.wav` accompaniment track.
+   - **`MT3` + `TorchCREPE (full)`**: Multi-pitch guitar note transcription fused with 5ms continuous $F_0$ pitch contours to capture quarter/half/full/1.5-step bends, pre-bend releases, slides, and vibrato.
+3. **Multimodal Copilot (`Gemini 4 Argon` & `Gemini 4 Carbon`)**
+   - **`gemini-4-argon`**: Inspects frames from the cropped solo video to detect whether the guitarist's fretting hand is visible and extract time-windowed fret-box priors.
+   - **`gemini-4-carbon`**: Listens to the isolated guitar audio alongside candidate detections and video priors to refine key/scale, prune residual bleed, and optimize 6-string fingerings.
+
+## Local Setup
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.9+ (3.11+ recommended)
 - Node.js 18+
-- FFmpeg (Installed via `brew install ffmpeg`)
+- FFmpeg (`brew install ffmpeg`)
+- Google Cloud CLI (`gcloud`) or `GEMINI_API_KEY`
 
-### 1. Backend Setup (Python)
+### 1. Environment Configuration
+Create a `.env` file in the project root:
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-# First run will download AI models (Demucs/Basic Pitch)
-python main.py
+GCP_PROJECT_ID=tabmaker-studio-2026
+CLOUD_WORKER_URL=https://<your-cloud-run-worker-url>
+# Optional: uses prepaid Gemini API credits first, falling back to Vertex AI ADC
+GEMINI_API_KEY=
 ```
 
-### 2. Frontend Setup (React)
+### 2. Backend (Port 8000)
+```bash
+source backend/venv/bin/activate
+PYTHONPATH=. uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+### 3. Frontend (Port 5173 in dev, or served statically from `:8000`)
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Access the app at: `http://localhost:5173`
 
-## 🎸 How to Use
-
-1. **Ingest**: Paste a YouTube URL or upload a file. Use the manual Time Inputs to select your solo.
-2. **Spectral Lasso**: Visually identify the solo blobs. Drag your mouse to create a 2D box.
-3. **Verify**: Click **"Listen to Selection"** to hear the isolated "ghost" audio.
-4. **Transcribe**: Click **"Assign Selection as Solo"** to generate the initial tab.
-5. **Optimize**:
-   - **Area Select**: Drag across the tab to highlight a phrase.
-   - **Position Shift**: Move the slider to snap that phrase to a specific fret box (e.g. Fret 10).
-   - **Manual Tweak**: Click any note to cycle it through different strings.
-6. **Save**: Export your final work as a **PDF** or **MIDI**.
-
-## 🏗 Architecture
-See `ARCHITECTURE.md` for a deep dive into the STFT/iSTFT masking and logic filters.
+## Testing & Benchmarks
+```bash
+PYTHONPATH=. backend/venv/bin/pytest backend/tests -v
+```

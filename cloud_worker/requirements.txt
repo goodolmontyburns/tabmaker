@@ -1,0 +1,14 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+numpy>=1.26.0,<2.1.0
+scipy>=1.11.0
+soundfile>=0.12.1
+librosa>=0.10.2
+pretty_midi>=0.2.10
+torchcrepe>=0.0.23
+audio-separator[gpu]>=0.24.0
+beat_this @ https://github.com/CPJKU/beat_this/archive/main.zip
+mt3-infer @ git+https://github.com/openmirlab/mt3-infer.git
+transformers==4.43.4
+huggingface_hub>=0.23.0,<0.26.0

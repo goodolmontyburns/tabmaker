@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import { convertNotesToAlphaTex } from '../utils/alphaTexConverter';
 
@@ -25,6 +25,10 @@ interface CleanTabScoreProps {
   duration: number;
   audioRef: React.RefObject<HTMLAudioElement | null>;
   songKey?: string;
+  title?: string;
+  tempo?: number;
+  beats?: number[];
+  downbeats?: number[];
   isGroundTruth?: boolean;
   onUpdateNotes: (newNotes: NoteItem[]) => void;
 }
@@ -36,6 +40,10 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
   duration,
   audioRef,
   songKey = 'C Blues',
+  title = 'Guitar Solo',
+  tempo = 120,
+  beats = [],
+  downbeats = [],
   isGroundTruth = false,
   onUpdateNotes
 }) => {
@@ -49,13 +57,13 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const refAnimFrameRef = useRef<number | null>(null);
   const synthStartRef = useRef<number>(0);
   const synthOffsetRef = useRef<number>(0);
   const scheduledNotesRef = useRef<Set<string>>(new Set());
 
-  // Layout parameters: 25 measures for Clapton ground truth, or dynamic for any YouTube audio
-  const tempo = 131;
-  const measureDur = (60.0 / tempo) * 4.0; // ~1.832s per measure
+  const safeTempo = isGroundTruth ? 131 : Math.max(40, Math.min(240, Math.round(tempo || 120)));
+  const measureDur = (60.0 / safeTempo) * 4.0;
   const maxNoteTime = notes.reduce((max, n) => Math.max(max, n.t + n.d), 0);
   const effectiveDuration = Math.max(duration > 0 ? duration : 0, maxNoteTime, 4.0);
   const totalMeasures = isGroundTruth ? 25 : Math.max(1, Math.ceil(effectiveDuration / measureDur));
@@ -64,11 +72,11 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
   const paddingLeft = 45;
   const paddingRight = 35;
   const rowWidth = 980;
-  const stringSpacing = 13; // Clean standard tab line spacing
+  const stringSpacing = 13;
   const tabTop = 45;
   const stemHeight = 28;
-  const rowHeight = tabTop + 5 * stringSpacing + stemHeight + 35; // Total vertical system spacing
-  const measuresPerRow = 3; // 3 measures per system line
+  const rowHeight = tabTop + 5 * stringSpacing + stemHeight + 35;
+  const measuresPerRow = 3;
   const measureWidth = (rowWidth - paddingLeft - paddingRight) / measuresPerRow;
   const numRows = Math.ceil(totalMeasures / measuresPerRow);
   const svgHeight = numRows * rowHeight + 30;
@@ -86,7 +94,7 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
     const m = Math.min(totalMeasures - 1, Math.floor(clampedT / measureDur));
     const rowIndex = Math.floor(m / measuresPerRow);
     const localM = m % measuresPerRow;
-    const tLocal = clampedT - (m * measureDur);
+    const tLocal = clampedT - m * measureDur;
 
     const x = paddingLeft + localM * measureWidth + (tLocal / measureDur) * measureWidth;
     const yStart = rowIndex * rowHeight + tabTop - 10;
@@ -99,7 +107,54 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
     playheadRef.current.style.display = 'block';
   };
 
-  // Dedicated MIDI Synthesizer Playback (Plays pure isolated MIDI guitar solo)
+  // Sync playhead with reference HTMLAudioElement at 60 FPS
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+
+    const cancelRefLoop = () => {
+      if (refAnimFrameRef.current) {
+        cancelAnimationFrame(refAnimFrameRef.current);
+        refAnimFrameRef.current = null;
+      }
+    };
+
+    const tick = () => {
+      if (!audio.paused && !audio.ended) {
+        updatePlayhead(audio.currentTime);
+        setActiveTime(audio.currentTime);
+        refAnimFrameRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    const onPlay = () => {
+      cancelRefLoop();
+      refAnimFrameRef.current = requestAnimationFrame(tick);
+    };
+    const onPause = () => cancelRefLoop();
+    const onSeeked = () => {
+      updatePlayhead(audio.currentTime);
+      setActiveTime(audio.currentTime);
+    };
+
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onPause);
+    audio.addEventListener('seeked', onSeeked);
+
+    if (!audio.paused) {
+      onPlay();
+    }
+
+    return () => {
+      cancelRefLoop();
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onPause);
+      audio.removeEventListener('seeked', onSeeked);
+    };
+  }, [audioRef?.current, effectiveDuration, measureDur, totalMeasures]);
+
   const toggleMidiPlayback = () => {
     if (isPlayingSynth) {
       stopMidiSynth();
@@ -109,7 +164,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
   };
 
   const startMidiSynth = () => {
-    // Pause the reference soundtrack audio so ONLY isolated MIDI plays
     if (audioRef.current && !audioRef.current.paused) {
       audioRef.current.pause();
     }
@@ -139,7 +193,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
         return;
       }
 
-      // Schedule notes within a lookahead window
       notes.forEach((n) => {
         if (n.t >= currentSynthT && n.t < currentSynthT + 0.12 && !scheduledNotesRef.current.has(n.id)) {
           scheduledNotesRef.current.add(n.id);
@@ -160,7 +213,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
     scheduledNotesRef.current.clear();
   };
 
-  // High-Quality Electric Guitar Pluck Synthesizer with Pitch Bends & Vibrato
   const playPluck = (note: NoteItem, delay: number) => {
     const ctx = audioContextRef.current;
     if (!ctx) return;
@@ -168,52 +220,51 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
     const now = ctx.currentTime + delay;
     const baseFreq = 440 * Math.pow(2, (note.p - 69) / 12);
 
-    // Oscillator 1: Warm Triangle
     const osc1 = ctx.createOscillator();
     osc1.type = 'triangle';
     osc1.frequency.setValueAtTime(baseFreq, now);
 
-    // Oscillator 2: Subtle Sawtooth Harmonic for Electric Guitar Bite
     const osc2 = ctx.createOscillator();
     osc2.type = 'sawtooth';
     osc2.frequency.setValueAtTime(baseFreq, now);
 
-    // Lowpass filter to simulate guitar pickup tone
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(2200, now);
     filter.frequency.exponentialRampToValueAtTime(800, now + Math.max(0.08, note.d));
 
-    // Pitch bend modulation
     if (note.bend) {
       const bendSemitones = note.bend.semitones || (note.bend.type === 'full' ? 2 : note.bend.type === 'half' ? 1 : 0.5);
       const targetFreq = 440 * Math.pow(2, (note.p + bendSemitones - 69) / 12);
-      osc1.frequency.setValueAtTime(baseFreq, now);
-      osc2.frequency.setValueAtTime(baseFreq, now);
-      osc1.frequency.linearRampToValueAtTime(targetFreq, now + Math.min(note.d * 0.6, 0.25));
-      osc2.frequency.linearRampToValueAtTime(targetFreq, now + Math.min(note.d * 0.6, 0.25));
+      if (note.bend.type === 'release') {
+        osc1.frequency.setValueAtTime(targetFreq, now);
+        osc2.frequency.setValueAtTime(targetFreq, now);
+        osc1.frequency.linearRampToValueAtTime(baseFreq, now + Math.min(note.d * 0.6, 0.25));
+        osc2.frequency.linearRampToValueAtTime(baseFreq, now + Math.min(note.d * 0.6, 0.25));
+      } else {
+        osc1.frequency.linearRampToValueAtTime(targetFreq, now + Math.min(note.d * 0.6, 0.25));
+        osc2.frequency.linearRampToValueAtTime(targetFreq, now + Math.min(note.d * 0.6, 0.25));
+      }
     }
 
-    // Vibrato LFO if active
     if (note.vibrato) {
       const lfo = ctx.createOscillator();
       const lfoGain = ctx.createGain();
-      lfo.frequency.setValueAtTime(5.5, now); // 5.5 Hz blues vibrato
-      lfoGain.gain.setValueAtTime(baseFreq * 0.02, now); // 2% pitch depth
+      lfo.frequency.setValueAtTime(5.5, now);
+      lfoGain.gain.setValueAtTime(baseFreq * 0.02, now);
       lfo.connect(lfoGain);
       lfoGain.connect(osc1.frequency);
       lfoGain.connect(osc2.frequency);
       lfo.start(now + 0.1);
-      lfo.stop(now + note.d);
+      lfo.stop(now + Math.max(0.15, note.d));
     }
 
-    // ADSR Gain Envelope
     const gain1 = ctx.createGain();
     const gain2 = ctx.createGain();
     const masterGain = ctx.createGain();
 
     gain1.gain.setValueAtTime(0.001, now);
-    gain1.gain.exponentialRampToValueAtTime(0.25, now + 0.005); // Fast crisp attack
+    gain1.gain.exponentialRampToValueAtTime(0.25, now + 0.005);
     gain1.gain.exponentialRampToValueAtTime(0.0001, now + Math.max(0.08, note.d));
 
     gain2.gain.setValueAtTime(0.001, now);
@@ -244,26 +295,31 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
     if (rowIndex < 0 || rowIndex >= numRows) return;
 
     const rowLocalX = clientX - paddingLeft;
-    if (rowLocalX < 0 || rowLocalX > (rowWidth - paddingLeft - paddingRight)) return;
+    if (rowLocalX < 0 || rowLocalX > rowWidth - paddingLeft - paddingRight) return;
 
     const localM = Math.floor(rowLocalX / measureWidth);
     const m = rowIndex * measuresPerRow + localM;
     if (m >= totalMeasures) return;
 
-    const inMeasureX = rowLocalX - (localM * measureWidth);
+    const inMeasureX = rowLocalX - localM * measureWidth;
     const frac = Math.max(0, Math.min(1, inMeasureX / measureWidth));
     const targetT = m * measureDur + frac * measureDur;
 
     setActiveTime(targetT);
     updatePlayhead(targetT);
 
-    // If synth is playing, reposition playback start
+    if (audioRef.current && audioRef.current.src) {
+      audioRef.current.currentTime = Math.min(audioRef.current.duration || targetT, targetT);
+    }
+
     if (isPlayingSynth && audioContextRef.current) {
       synthStartRef.current = audioContextRef.current.currentTime;
       synthOffsetRef.current = targetT;
       scheduledNotesRef.current.clear();
     }
   };
+
+  const safeFileBase = (title || 'Guitar_Solo').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Guitar_Solo';
 
   const exportToPDF = () => {
     const svgElement = svgRef.current;
@@ -294,38 +350,35 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
       });
 
       doc.addImage(imgData, 'PNG', 0, 0, canvas.width / 2, canvas.height / 2);
-      doc.save('Eric_Clapton_Im_Tore_Down_Solo_Score.pdf');
+      doc.save(`${safeFileBase}_Tab.pdf`);
       URLObject.revokeObjectURL(blobURL);
     };
     image.src = blobURL;
   };
 
   const exportAlphaTex = () => {
-    const alphaTexString = convertNotesToAlphaTex(notes);
+    const alphaTexString = convertNotesToAlphaTex(notes, title, 'TabMaker', safeTempo, duration, isGroundTruth, beats, downbeats);
     const blob = new Blob([alphaTexString], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Eric_Clapton_Im_Tore_Down_Solo.alphatex';
+    a.download = `${safeFileBase}.alphatex`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // Group notes into simultaneous clusters (chords / dyads) for clean vertical engraving
   const clusteredNotes: { main: NoteItem; chord: NoteItem[]; x: number; y: number; rowIndex: number }[] = [];
   const processedNoteIds = new Set<string>();
 
   notes.forEach((n) => {
     if (processedNoteIds.has(n.id)) return;
-
-    // Find all notes with simultaneous onset (within 0.085s)
-    const chord = notes.filter((other) => Math.abs(other.t - n.t) <= 0.085);
+    const chord = notes.filter((other) => Math.abs(other.t - n.t) <= 0.055);
     chord.forEach((c) => processedNoteIds.add(c.id));
 
     const m = Math.min(totalMeasures - 1, Math.floor(n.t / measureDur));
     const rowIndex = Math.floor(m / measuresPerRow);
     const localM = m % measuresPerRow;
-    const tLocal = n.t - (m * measureDur);
+    const tLocal = n.t - m * measureDur;
 
     const x = paddingLeft + localM * measureWidth + (tLocal / measureDur) * measureWidth;
     const rowY = rowIndex * rowHeight;
@@ -336,22 +389,23 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
 
   return (
     <div style={{ marginTop: '20px' }}>
-      {/* Header Controls */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '12px',
-          padding: '0 4px'
+          padding: '0 4px',
+          flexWrap: 'wrap',
+          gap: '8px'
         }}
       >
         <div>
           <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 'bold', color: '#111827', letterSpacing: '-0.01em', fontFamily: 'Georgia, serif' }}>
-            Guitar Tablature Score (Interactive Note Editor)
+            {title} — Interactive Note &amp; Fingering Editor
           </h3>
           <span style={{ fontSize: '0.85rem', color: '#4b5563', fontFamily: '-apple-system, sans-serif' }}>
-            Key: <strong>{songKey}</strong> | Standard 4/4 | {isGroundTruth ? 'Measures 45–69' : `${totalMeasures} Measures`} • <em>Plays Pure Isolated MIDI Guitar Solo</em>
+            Key: <strong>{songKey}</strong> | Tempo: <strong>{safeTempo} BPM</strong> | 4/4 | {isGroundTruth ? 'Measures 45–69' : `${totalMeasures} Measures`}
           </span>
         </div>
 
@@ -383,9 +437,8 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
               fontWeight: 500,
               cursor: 'pointer'
             }}
-            title="Download Guitar Pro / Ultimate Guitar compatible AlphaTex format"
           >
-            🎸 Export AlphaTex
+            Export AlphaTex
           </button>
           <button
             onClick={exportToPDF}
@@ -400,12 +453,11 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
               cursor: 'pointer'
             }}
           >
-            📄 Export PDF
+            Export PDF
           </button>
         </div>
       </div>
 
-      {/* Sheet Music Vector Tab Canvas */}
       <div
         ref={containerRef}
         style={{
@@ -427,10 +479,8 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
         >
           {Array.from({ length: numRows }).map((_, rIdx) => {
             const rowY = rIdx * rowHeight;
-
             return (
               <g key={`row-${rIdx}`}>
-                {/* Section Header for Row 0 (Measure 45 Solo Pickup) */}
                 {rIdx === 0 && (
                   <text
                     x={paddingLeft}
@@ -444,7 +494,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                   </text>
                 )}
 
-                {/* 6 Staff Strings (Solid crisp black lines 0.8px) */}
                 {[0, 1, 2, 3, 4, 5].map((s) => (
                   <line
                     key={`string-${rIdx}-${s}`}
@@ -457,7 +506,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                   />
                 ))}
 
-                {/* Measures in this system row */}
                 {Array.from({ length: measuresPerRow }).map((_, mOffset) => {
                   const absM = rIdx * measuresPerRow + mOffset;
                   if (absM >= totalMeasures) return null;
@@ -466,7 +514,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
 
                   return (
                     <g key={`measure-${absM}`}>
-                      {/* Measure Left Bar Line */}
                       <line
                         x1={mX}
                         y1={rowY + tabTop}
@@ -475,8 +522,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                         stroke="#000000"
                         strokeWidth="1.0"
                       />
-
-                      {/* Measure Number Label */}
                       <text
                         x={mX + 4}
                         y={rowY + tabTop - 6}
@@ -491,7 +536,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                   );
                 })}
 
-                {/* System Right End Bar Line */}
                 <line
                   x1={rowWidth - paddingRight}
                   y1={rowY + tabTop}
@@ -504,13 +548,11 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
             );
           })}
 
-          {/* Render All Notes / Dyads with Exact Official Sheet Music Typography */}
           {clusteredNotes.map(({ main, chord, x, rowIndex }) => {
             const rowY = rowIndex * rowHeight;
 
             return (
               <g key={`cluster-${main.id}`} className="note-group">
-                {/* Rhythm Stem below Staff for the Beat */}
                 <line
                   x1={x}
                   y1={rowY + tabTop + 5 * stringSpacing + 2}
@@ -528,7 +570,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                   strokeWidth="1.2"
                 />
 
-                {/* Render Each Note in the Chord/Dyad stacked vertically on its string */}
                 {chord.map((n) => {
                   const y = rowY + tabTop + (n.s - 1) * stringSpacing;
                   const fretStr = n.f.toString();
@@ -537,7 +578,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
 
                   return (
                     <g key={n.id}>
-                      {/* Clean White Cutout Mask (Breaks staff line cleanly behind the digit) */}
                       <rect
                         x={x - textWidth / 2 - 1.5}
                         y={y - 6}
@@ -545,8 +585,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                         height={12}
                         fill="#ffffff"
                       />
-
-                      {/* Clean Tab Fret Digit */}
                       <text
                         x={x}
                         y={y + 4}
@@ -564,7 +602,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                         {n.f}
                       </text>
 
-                      {/* Official Bend Notation */}
                       {n.bend && (
                         <g>
                           <path
@@ -585,18 +622,17 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
                             fill="#000000"
                             textAnchor="middle"
                           >
-                            {n.bend.type === 'full' ? '1' : n.bend.type === 'half' ? '1/2' : '1/4'}
+                            {n.bend.type === 'full' ? '1' : n.bend.type === 'half' ? '1/2' : n.bend.type === 'quarter' ? '1/4' : `${n.bend.semitones / 2}`}
                           </text>
                         </g>
                       )}
 
-                      {/* Interactive Alternative Voicing Popover if Editing */}
                       {isThisNoteEditing &&
-                        TUNING_OFFSETS.slice(0, 5).map((off, sIdx) => {
+                        TUNING_OFFSETS.map((off, sIdx) => {
                           const altS = sIdx + 1;
                           if (altS === n.s) return null;
                           const altF = n.p - off;
-                          if (altF >= 0 && altF <= 22) {
+                          if (altF >= 0 && altF <= 24) {
                             const optY = rowY + tabTop + sIdx * stringSpacing;
                             return (
                               <g
@@ -634,7 +670,6 @@ export const CleanTabScore: React.FC<CleanTabScoreProps> = ({
             );
           })}
 
-          {/* Synchronized Red Playhead Line */}
           <line
             ref={playheadRef}
             x1={0}

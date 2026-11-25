@@ -9,6 +9,9 @@ interface AlphaTabViewerProps {
   songKey?: string;
   title?: string;
   duration?: number;
+  tempo?: number;
+  beats?: number[];
+  downbeats?: number[];
   isGroundTruth?: boolean;
   audioRef?: React.RefObject<HTMLAudioElement | null>;
 }
@@ -16,13 +19,17 @@ interface AlphaTabViewerProps {
 export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
   notes,
   songKey = 'C Blues',
-  title = 'Guitar Solo (AI Transcription)',
+  title = 'Guitar Solo',
   duration = 0,
+  tempo = 120,
+  beats = [],
+  downbeats = [],
   isGroundTruth = false,
   audioRef
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<alphaTab.AlphaTabApi | null>(null);
+  const scoreEndTickRef = useRef<number>(0);
 
   const [activeTabMode, setActiveTabMode] = useState<'official' | 'transcribed'>(
     isGroundTruth ? 'official' : 'transcribed'
@@ -30,23 +37,26 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [isScoreReady, setIsScoreReady] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  const safeTempo = isGroundTruth ? 131 : Math.max(40, Math.min(240, Math.round(tempo || 120)));
 
   const currentAlphaTex = isGroundTruth && activeTabMode === 'official'
     ? OFFICIAL_CLAPTON_ALPHATEX
-    : convertNotesToAlphaTex(notes, title, 'TabMaker AI', 131, duration, isGroundTruth);
+    : convertNotesToAlphaTex(notes, title, 'TabMaker', safeTempo, duration, isGroundTruth, beats, downbeats);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Configure AlphaTab to match Ultimate Guitar layout
     const settings = new alphaTab.Settings();
     settings.core.engine = 'svg';
     settings.core.fontDirectory = '/font/';
-    settings.core.useWorkers = false; // Run directly in main thread for instant rendering
+    settings.core.useWorkers = false;
     settings.core.tex = true;
     settings.display.layoutMode = alphaTab.LayoutMode.Page;
-    settings.display.staveProfile = alphaTab.StaveProfile.ScoreTab; // Standard notation + Tab clef
+    settings.display.staveProfile = alphaTab.StaveProfile.ScoreTab;
     settings.player.enablePlayer = true;
+    settings.player.enableCursor = true;
     settings.player.soundFont = '/soundfont/sonivox.sf2';
 
     try {
@@ -57,8 +67,18 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
       const api = new alphaTab.AlphaTabApi(containerRef.current, settings);
       apiRef.current = api;
 
-      api.scoreLoaded.on(() => {
+      api.scoreLoaded.on((score) => {
         setIsScoreReady(true);
+        setRenderError(null);
+        if (score && score.masterBars && score.masterBars.length > 0) {
+          const lastBar = score.masterBars[score.masterBars.length - 1];
+          scoreEndTickRef.current = lastBar.start + lastBar.calculateDuration();
+        }
+      });
+
+      api.error.on((err) => {
+        console.error('AlphaTab API Error:', err);
+        setRenderError(err?.message || 'AlphaTab render error');
       });
 
       api.playerStateChanged.on((args) => {
@@ -66,8 +86,9 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
       });
 
       api.tex(currentAlphaTex);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error initializing AlphaTab:', err);
+      setRenderError(err?.message || 'Failed to initialize AlphaTab');
     }
 
     return () => {
@@ -78,30 +99,64 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     };
   }, []);
 
-  // Sync with audioRef element
+  // Sync AlphaTab cursor continuously with HTML <audio> playback
   useEffect(() => {
     const audio = audioRef?.current;
     if (!audio) return;
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    let rafId = 0;
+
+    const syncCursorToAudio = () => {
+      const api = apiRef.current;
+      const totalDur = Math.max(duration || audio.duration || 1, 0.5);
+      if (api && scoreEndTickRef.current > 0) {
+        const ratio = Math.max(0, Math.min(1, audio.currentTime / totalDur));
+        try {
+          api.tickPosition = Math.floor(ratio * scoreEndTickRef.current);
+        } catch {
+          // Ignore while player initializes
+        }
+      }
+      if (!audio.paused && !audio.ended) {
+        rafId = requestAnimationFrame(syncCursorToAudio);
+      }
+    };
+
+    const handlePlay = () => {
+      setIsPlaying(true);
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(syncCursorToAudio);
+    };
+    const handlePause = () => {
+      setIsPlaying(false);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+    const handleSeeked = () => {
+      syncCursorToAudio();
+    };
 
     audio.addEventListener('play', handlePlay);
     audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handlePause);
+    audio.addEventListener('seeked', handleSeeked);
 
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handlePause);
+      audio.removeEventListener('seeked', handleSeeked);
     };
-  }, [audioRef?.current]);
+  }, [audioRef?.current, duration]);
 
-  // Update score when notes or active mode changes
   useEffect(() => {
     if (apiRef.current && isScoreReady) {
       try {
+        setRenderError(null);
         apiRef.current.tex(currentAlphaTex);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error rendering AlphaTex:', err);
+        setRenderError(err?.message || 'AlphaTex parse error');
       }
     }
   }, [currentAlphaTex, isScoreReady]);
@@ -123,6 +178,16 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
     }
   };
 
+  const toggleTabSynth = () => {
+    const audio = audioRef?.current;
+    if (audio && !audio.paused) {
+      audio.pause();
+    }
+    if (apiRef.current) {
+      apiRef.current.playPause();
+    }
+  };
+
   const handleSpeedChange = (speed: number) => {
     setPlaybackSpeed(speed);
     if (audioRef?.current) {
@@ -134,18 +199,18 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
   };
 
   const exportAlphaTexFile = () => {
+    const safeName = (title || 'Guitar_Solo').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Guitar_Solo';
     const blob = new Blob([currentAlphaTex], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${title.replace(/\s+/g, '_')}.alphatex`;
+    a.download = `${safeName}.alphatex`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   return (
     <div style={{ marginTop: '20px', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', overflow: 'hidden' }}>
-      {/* Ultimate Guitar Style Toolbar */}
       <div
         style={{
           display: 'flex',
@@ -158,17 +223,16 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
           gap: '12px'
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
           <div>
             <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 'bold', color: '#0f172a', letterSpacing: '-0.01em', fontFamily: 'Georgia, serif' }}>
               {title}
             </h3>
             <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
-              Key: <strong>{songKey}</strong> | Standard 4/4 {duration > 0 ? `| Duration: ${duration.toFixed(1)}s` : ''}
+              Key: <strong>{songKey}</strong> | Tempo: <strong>{safeTempo} BPM</strong> | Standard 4/4 {duration > 0 ? `| Duration: ${duration.toFixed(1)}s` : ''}
             </span>
           </div>
 
-          {/* If Ground Truth Benchmark session, show mode switcher; otherwise show AI Transcribed Badge */}
           {isGroundTruth ? (
             <div style={{ display: 'flex', gap: '6px', background: '#e2e8f0', padding: '3px', borderRadius: '6px' }}>
               <button
@@ -185,7 +249,7 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
                   boxShadow: activeTabMode === 'official' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
                 }}
               >
-                ★ Official UG Score
+                Official Score
               </button>
               <button
                 onClick={() => setActiveTabMode('transcribed')}
@@ -201,18 +265,17 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
                   boxShadow: activeTabMode === 'transcribed' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
                 }}
               >
-                AI Audio Transcription
+                AI Transcription
               </button>
             </div>
           ) : (
             <span style={{ fontSize: '0.8rem', background: '#e0f2fe', color: '#0369a1', padding: '4px 10px', borderRadius: '6px', fontWeight: 600 }}>
-              AI Transcribed Score
+              Transcribed Score
             </span>
           )}
         </div>
 
-        {/* Playback & Export Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <button
             onClick={togglePlay}
             style={{
@@ -220,16 +283,29 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
               color: 'white',
               border: 'none',
               borderRadius: '6px',
-              padding: '7px 16px',
-              fontSize: '0.9rem',
+              padding: '7px 14px',
+              fontSize: '0.85rem',
               fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
               cursor: 'pointer'
             }}
           >
-            {isPlaying ? '■ Pause' : '▶ Play Soundtrack'}
+            {isPlaying ? '■ Pause Audio' : '▶ Play Audio'}
+          </button>
+
+          <button
+            onClick={toggleTabSynth}
+            style={{
+              background: '#f8fafc',
+              color: '#334155',
+              border: '1px solid #cbd5e1',
+              borderRadius: '6px',
+              padding: '6px 12px',
+              fontSize: '0.85rem',
+              fontWeight: 500,
+              cursor: 'pointer'
+            }}
+          >
+            Play Tab Synth
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px', overflow: 'hidden' }}>
@@ -263,29 +339,26 @@ export const AlphaTabViewer: React.FC<AlphaTabViewerProps> = ({
               padding: '6px 12px',
               fontSize: '0.85rem',
               fontWeight: 500,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
               cursor: 'pointer'
             }}
-            title="Download Guitar Pro / Ultimate Guitar compatible AlphaTex format"
           >
-            🎸 Download AlphaTex
+            Download AlphaTex
           </button>
         </div>
       </div>
 
-      {/* AlphaTab Render Surface */}
-      <div style={{ padding: '24px 16px', background: '#ffffff', minHeight: '600px', display: 'flex', justifyContent: 'center' }}>
-        <div
-          ref={containerRef}
-          style={{ width: '100%', maxWidth: '1020px' }}
-        />
+      {renderError && (
+        <div style={{ margin: '12px 20px 0 20px', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: '6px', fontSize: '0.85rem' }}>
+          Score render issue: {renderError}
+        </div>
+      )}
+
+      <div style={{ padding: '24px 16px', background: '#ffffff', minHeight: '500px', display: 'flex', justifyContent: 'center' }}>
+        <div ref={containerRef} style={{ width: '100%', maxWidth: '1020px' }} />
       </div>
 
-      {/* Subtle Footer Note */}
       <div style={{ padding: '8px 20px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', fontSize: '0.75rem', color: '#94a3b8', textAlign: 'center' }}>
-        Standard Notation + Tablature • Engraved dynamically by AlphaTab Core Engine
+        Standard Notation + Tablature • Engraved by AlphaTab
       </div>
     </div>
   );
